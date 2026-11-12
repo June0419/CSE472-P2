@@ -366,6 +366,10 @@ version = "0.1.0"
 source = { editable = "." }
 
 [package.optional-dependencies]
+data = [
+    { name = "datasets" },
+    { name = "huggingface-hub" },
+]
 experiment = [
     { name = "accelerate" },
     { name = "datasets" },
@@ -381,7 +385,9 @@ experiment = [
 [package.metadata]
 requires-dist = [
     { name = "accelerate", marker = "extra == 'experiment'", specifier = ">=1,<2" },
+    { name = "datasets", marker = "extra == 'data'", specifier = ">=3,<5" },
     { name = "datasets", marker = "extra == 'experiment'", specifier = ">=3,<5" },
+    { name = "huggingface-hub", marker = "extra == 'data'", specifier = ">=0.30,<1" },
     { name = "matplotlib", marker = "extra == 'experiment'", specifier = ">=3.8,<4" },
     { name = "numpy", marker = "extra == 'experiment'", specifier = ">=1.26,<3" },
     { name = "peft", marker = "extra == 'experiment'", specifier = ">=0.15,<1" },
@@ -389,7 +395,7 @@ requires-dist = [
     { name = "torch", marker = "extra == 'experiment'", specifier = ">=2.6,<3" },
     { name = "transformers", marker = "extra == 'experiment'", specifier = ">=4.51,<5" },
 ]
-provides-extras = ["experiment"]
+provides-extras = ["data", "experiment"]
 
 [[package]]
 name = "cuda-bindings"
