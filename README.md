@@ -56,3 +56,24 @@ Choose and document the protection method after reading the two required papers.
 Keep answer keys unchanged, evaluate on clean test data, and compare all four
 conditions over three seeds. Record exact Hub revisions and GPU/CUDA details
 with each run in addition to the dependency lockfile.
+
+## Computer specifications and environment checks
+
+Run the script directly to display CPU, RAM, OS, free disk space, and NVIDIA
+GPU/driver information even when PyTorch is not installed:
+
+```powershell
+python src/cse472_project2/check.py
+```
+
+The default output is human-readable. Add `--json` for structured output, or
+`--require-training` to return a failing exit status when training prerequisites
+are missing. NVIDIA hardware detection uses `nvidia-smi`; PyTorch CUDA and native
+bf16 support are checked separately. An unavailable hardware query is not proof
+that the machine has no GPU. Free disk space is for the current working directory.
+
+The displayed interpreter path identifies the Python installation being checked.
+If VS Code uses Python 3.14 or reports missing packages, select the project's
+`.venv` interpreter (Python 3.12). Install the experiment dependencies on the
+training PC using the commands above. The check does not verify Hugging Face
+access, download models, or guarantee that a full training run fits in memory.
