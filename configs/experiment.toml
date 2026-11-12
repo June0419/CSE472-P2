@@ -1,0 +1,36 @@
+# Proposed starting settings, not tuned or validated training results.
+seeds = [42, 123, 2026]
+conditions = ["zero_shot", "original", "random_edits", "protected"]
+
+[dataset]
+id = "allenai/ai2_arc"
+subset = "ARC-Challenge"
+train_split = "train"
+validation_split = "validation"
+test_split = "test"
+editable_fields = ["question", "choices.text"]
+preserve_fields = ["id", "choices.label", "answerKey"]
+
+[models]
+surrogate = "meta-llama/Meta-Llama-3-8B"
+white_box = "meta-llama/Meta-Llama-3-8B"
+black_box = "Qwen/Qwen3-8B"
+readability = "openai-community/gpt2"
+meaning = "sentence-transformers/all-MiniLM-L6-v2"
+
+[training]
+dtype = "bfloat16"
+max_seq_length = 512
+learning_rate = 0.0002
+num_train_epochs = 3
+per_device_train_batch_size = 1
+gradient_accumulation_steps = 16
+gradient_checkpointing = true
+
+[lora]
+r = 16
+lora_alpha = 32
+lora_dropout = 0.05
+target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
+bias = "none"
+task_type = "CAUSAL_LM"
