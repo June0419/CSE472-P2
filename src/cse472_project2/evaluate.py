@@ -195,20 +195,57 @@ def aggregate_results(
 
 
 def format_markdown_table(aggregated: Dict[str, Dict[str, Dict[str, float]]]) -> str:
-    """Format aggregated results into an academic Markdown table."""
+    """Format aggregated results into the exact schema required by Step 5 of the Guideline."""
     lines = [
-        "| Model | Training Condition | Clean Test Acc (%) | Perplexity (GPT-2) | SBERT Similarity |",
+        "| VICTIM | TRAINING DATA | TEST ACCURACY | GPT-2 PERPLEXITY | SBERT SIMILARITY |",
         "| :--- | :--- | :---: | :---: | :---: |",
     ]
     for model, conditions in aggregated.items():
-        model_display = model.split("/")[-1]
-        for cond, m in conditions.items():
+        # Match victim name format from guideline (e.g. Llama-3-8B, Qwen3-8B)
+        if "llama" in model.lower():
+            model_display = "Llama-3-8B"
+            is_surrogate = True
+        elif "qwen" in model.lower():
+            model_display = "Qwen3-8B"
+            is_surrogate = False
+        else:
+            model_display = model.split("/")[-1]
+            is_surrogate = True
+
+        for cond in ["zero_shot", "original", "random_edits", "protected", "custom_protected"]:
+            if cond not in conditions:
+                continue
+            m = conditions[cond]
             acc_str = f"{m['accuracy_mean']:.2f} ± {m['accuracy_std']:.2f}"
-            ppl_str = f"{m['perplexity_mean']:.2f} ± {m['perplexity_std']:.2f}"
-            sim_str = f"{m['similarity_mean']:.4f} ± {m['similarity_std']:.4f}"
-            cond_display = cond.replace("_", " ").title()
+
+            if cond == "zero_shot":
+                cond_display = "None (zero-shot)"
+                ppl_str = "—"
+                sim_str = "—"
+            elif cond == "original":
+                cond_display = "Original"
+                ppl_str = f"{m['perplexity_mean']:.2f} ± {m['perplexity_std']:.2f}"
+                sim_str = f"{m['similarity_mean']:.4f} ± {m['similarity_std']:.4f}"
+            elif cond == "random_edits":
+                cond_display = "Random edits"
+                ppl_str = f"{m['perplexity_mean']:.2f} ± {m['perplexity_std']:.2f}"
+                sim_str = f"{m['similarity_mean']:.4f} ± {m['similarity_std']:.4f}"
+            elif cond == "protected":
+                cond_display = "Protected (white-box)" if is_surrogate else "Protected (black-box)"
+                ppl_str = f"{m['perplexity_mean']:.2f} ± {m['perplexity_std']:.2f}"
+                sim_str = f"{m['similarity_mean']:.4f} ± {m['similarity_std']:.4f}"
+            elif cond == "custom_protected":
+                cond_display = "Custom (CS-Trap)"
+                ppl_str = f"{m['perplexity_mean']:.2f} ± {m['perplexity_std']:.2f}"
+                sim_str = f"{m['similarity_mean']:.4f} ± {m['similarity_std']:.4f}"
+            else:
+                cond_display = cond.replace("_", " ").title()
+                ppl_str = f"{m['perplexity_mean']:.2f} ± {m['perplexity_std']:.2f}"
+                sim_str = f"{m['similarity_mean']:.4f} ± {m['similarity_std']:.4f}"
+
             lines.append(f"| {model_display} | {cond_display} | {acc_str} | {ppl_str} | {sim_str} |")
     return "\n".join(lines)
+
 
 
 def run_evaluation_suite(

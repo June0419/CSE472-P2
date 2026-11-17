@@ -79,9 +79,10 @@ class EvaluateTests(unittest.TestCase):
             }
         }
         table = format_markdown_table(agg)
-        self.assertIn("| Model | Training Condition | Clean Test Acc (%) |", table)
-        self.assertIn("Meta-Llama-3-8B", table)
+        self.assertIn("| VICTIM | TRAINING DATA | TEST ACCURACY |", table)
+        self.assertIn("Llama-3-8B", table)
         self.assertIn("48.50 ± 0.50", table)
+
 
 
 if __name__ == "__main__":

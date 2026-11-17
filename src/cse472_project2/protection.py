@@ -128,6 +128,54 @@ def apply_cs_trap(row: Dict[str, Any]) -> Dict[str, Any]:
     return new_row
 
 
+def search_bilevel_perturbation(
+    row: Dict[str, Any],
+    candidate_hints: List[str],
+    surrogate_model: Any,
+    tokenizer: Any,
+    prompt_builder: Optional[Any] = None,
+    device: str = "cuda",
+) -> str:
+    """Step 2 / Step 4 bilevel outer optimization: search for perturbation minimizing surrogate loss.
+
+    Solves: argmin_{delta in Delta} L_answer(f_theta(x + delta), y).
+    """
+    try:
+        import torch
+    except ImportError:
+        # Fallback when running on lightweight development machine without PyTorch
+        return candidate_hints[0]
+
+    from cse472_project2.prompt import build_prompt, create_training_sequence
+
+
+    validate_example(row)
+    target = str(row["answerKey"]).strip()
+    builder = prompt_builder or build_prompt
+    best_hint = candidate_hints[0]
+    min_loss = float("inf")
+
+    with torch.no_grad():
+        for hint in candidate_hints:
+            mod_row = copy.deepcopy(row)
+            mod_row["question"] = mod_row["question"].rstrip() + hint
+            prompt = builder(mod_row["question"], mod_row["choices"])
+
+            seq = create_training_sequence(prompt, target, tokenizer)
+            input_ids = torch.tensor([seq["input_ids"]], device=device)
+            attention_mask = torch.tensor([seq["attention_mask"]], device=device)
+            labels = torch.tensor([seq["labels"]], device=device)
+
+            outputs = surrogate_model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+            loss_val = outputs.loss.item()
+            if loss_val < min_loss:
+                min_loss = loss_val
+                best_hint = hint
+
+    return best_hint
+
+
+
 def perturb_train_split(
     records: List[Dict[str, Any]],
     method: str,

@@ -115,9 +115,17 @@ def plot_accuracy_comparison(
     plt.xlabel("Target Evaluation Model", fontsize=11, fontweight="bold")
     plt.ylabel("Clean Test Accuracy (%)", fontsize=11, fontweight="bold")
     plt.title("ARC-Challenge Clean Test Accuracy Across Data Protection Conditions", fontsize=12, fontweight="bold", pad=12)
-    model_displays = [m.split("/")[-1] for m in models]
+    model_displays = []
+    for m in models:
+        if "llama" in m.lower():
+            model_displays.append("Llama-3-8B\n(White-box)")
+        elif "qwen" in m.lower():
+            model_displays.append("Qwen3-8B\n(Black-box)")
+        else:
+            model_displays.append(m.split("/")[-1])
     plt.xticks(indices, model_displays, fontsize=10, fontweight="bold")
     plt.ylim(0, 60)
+
     plt.axhline(25.0, color="#d62728", linestyle=":", linewidth=1.2, label="Random Guessing (25%)")
     plt.legend(frameon=True, fontsize=9, loc="upper right")
     plt.tight_layout()
