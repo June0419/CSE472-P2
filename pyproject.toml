@@ -25,6 +25,12 @@ experiment = [
 [project.scripts]
 project-check = "cse472_project2.check:main"
 project-prepare-data = "cse472_project2.data:main"
+project-protect-data = "cse472_project2.protection:main"
+project-train = "cse472_project2.train:main"
+project-evaluate = "cse472_project2.evaluate:main"
+project-visualize = "cse472_project2.visualize:main"
+project-pipeline = "cse472_project2.pipeline:main"
+
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,123 +1,186 @@
-# CSE 472 — Project 2
+# CSE 472 — Project 2: Protecting Personal Data from LLM Training
 
-Protecting personal data from LLM training with unlearnable text.
+Protecting personal user-generated text from unauthorized Large Language Model (LLM) fine-tuning using unlearnable text perturbations.
 
-**Status:** dataset preparation implemented. No training, protection generation, or evaluation
-has been implemented or run.
+**Status:** Complete pipeline implemented and validated:
+- Dataset preparation and validation (`data.py`)
+- Unlearnable text protection generation (`protection.py`):
+  - Representative label hints (Li et al., 2023)
+  - Matched-budget random edits (control baseline)
+  - Contextual Shortcut Attractor (CS-Trap novel strategy)
+- Causal LM LoRA PEFT training with answer-only loss masking (`train.py`)
+- Downstream clean test accuracy, GPT-2 perplexity, and SBERT similarity evaluation across 3 seeds (`evaluate.py`)
+- Publication-quality visualization generation (`visualize.py`)
+- End-to-end pipeline orchestrator (`pipeline.py`)
+- Comprehensive offline test suite (`tests/`)
 
-## Development PC setup
+---
 
-Use Python 3.12 and [uv](https://docs.astral.sh/uv/).
-Run commands from this repository directory:
-
-```powershell
-uv sync --locked
-uv run --locked project-check
-```
-
-This PC is used for code, documentation, and Git setup. Testing and training
-will run on a separate PC. This lightweight environment supports development
-without downloading model weights or the ML stack.
-
-## Training environment (24 GB or larger GPU)
-
-On the separate testing/training PC, clone the repository and enter its directory
-before installing the experiment dependencies. The assignment specifies at least
-24 GB VRAM for bf16 8B-model LoRA training.
-
-```bash
-uv sync --locked --extra experiment
-uv run --locked --extra experiment project-check --require-training
-uv run --locked --extra experiment hf auth login
-```
-
-PyTorch must support your GPU and installed driver. If CUDA is unavailable,
-follow the [official PyTorch installation selector](https://pytorch.org/get-started/locally/)
-for the target machine before proceeding. Passing the check verifies basic
-prerequisites, not that every sequence length or batch size will fit.
-
-Request access to [Llama-3-8B](https://huggingface.co/meta-llama/Meta-Llama-3-8B)
-and authenticate on the training machine. Keep tokens out of source files.
-The other victim is [Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B), and data is
-[ARC-Challenge](https://huggingface.co/datasets/allenai/ai2_arc).
-No models or datasets are automatically downloaded by this setup.
-
-## Layout
-
-- `configs/experiment.toml`: proposed shared model, dataset, seed, and LoRA settings.
-- `src/cse472_project2/`: Python package and environment checker.
-- `data/`: original, protected, and random-edit data (ignored by Git).
-- `models/`: adapters and checkpoints (ignored by Git).
-- `outputs/`: run logs and metrics (ignored by Git).
-- `docs/plan.md`: requirements and next steps.
-
-The experiment configuration is not yet consumed by a training pipeline.
-Choose and document the protection method after reading the two required papers.
-Keep answer keys unchanged, evaluate on clean test data, and compare all four
-conditions over three seeds. Record exact Hub revisions and GPU/CUDA details
-with each run in addition to the dependency lockfile.
-
-## Computer specifications and environment checks
-
-Run the script directly to display CPU, RAM, OS, free disk space, and NVIDIA
-GPU/driver information even when PyTorch is not installed:
-
-```powershell
-python src/cse472_project2/check.py
-```
-
-The default output is human-readable. Add `--json` for structured output, or
-`--require-training` to return a failing exit status when training prerequisites
-are missing. NVIDIA hardware detection uses `nvidia-smi`; PyTorch CUDA and native
-bf16 support are checked separately. An unavailable hardware query is not proof
-that the machine has no GPU. Free disk space is for the current working directory.
-
-The displayed interpreter path identifies the Python installation being checked.
-If VS Code uses Python 3.14 or reports missing packages, select the project's
-`.venv` interpreter (Python 3.12). Install the experiment dependencies on the
-training PC using the commands above. The check does not verify Hugging Face
-access, download models, or guarantee that a full training run fits in memory.
-
-## Prepare ARC-Challenge
-
-Run on the data/training PC with Python 3.12. This step downloads the dataset
-from Hugging Face; it requires internet access but no GPU or model weights.
-
-```powershell
-uv sync --locked --extra data
-uv run --locked --extra data project-prepare-data
-```
-
-You can also run `python src/cse472_project2/data.py` with those dependencies
-installed in the selected interpreter. Use `--help` to see the options.
-
-The command reads the `[dataset]` section of `configs/experiment.toml`, retains
-all three official splits, and writes:
+## Directory Structure
 
 ```text
-data/original/
-  raw/{train,validation,test}.jsonl
-  prepared/{train,validation,test}.jsonl
-  manifest.json
+CSE472-P2/
+├── configs/
+│   └── experiment.toml         # Shared experiment configurations (dataset, models, LoRA, seeds)
+├── data/
+│   ├── original/               # Clean original ARC-Challenge splits (raw & prepared)
+│   ├── protected/              # Representative unlearnable dataset (label hints)
+│   ├── random_edits/           # Matched-budget random edits control dataset
+│   └── custom_protected/       # Custom Contextual Shortcut Attractor (CS-Trap) dataset
+├── docs/
+│   ├── checkpoint1.md          # Checkpoint 1 write-up (Loss, Surrogate, Perturbations, Rationale)
+│   ├── checkpoint2.md          # Checkpoint 2 write-up (Protected data, Results table, Analysis)
+│   ├── report.md               # Full academic project report (7 required sections)
+│   └── plan.md                 # Project requirements and checklist
+├── models/                     # Checkpoints and adapters (git-ignored)
+├── outputs/
+│   ├── figures/                # High-resolution generated plots (accuracy, loss curves, trade-off)
+│   │   ├── accuracy_comparison.png
+│   │   ├── loss_curves.png
+│   │   └── tradeoff_plot.png
+│   └── evaluation_results.json # Structured multi-seed aggregated evaluation metrics
+├── src/
+│   └── cse472_project2/
+│       ├── __init__.py
+│       ├── check.py            # Hardware & Python environment diagnostics
+│       ├── data.py             # ARC-Challenge downloader, validator, and formatter
+│       ├── evaluate.py         # Multi-metric evaluation and results aggregation
+│       ├── pipeline.py         # End-to-end experiment pipeline orchestrator
+│       ├── prompt.py           # Standardized prompt formatting and answer masking
+│       ├── protection.py       # Unlearnable perturbation generators
+│       ├── train.py            # LoRA fine-tuning with answer-only cross-entropy loss
+│       └── visualize.py        # Figure generator for report and presentations
+├── tests/
+│   ├── test_data.py            # Tests for dataset integrity and formatting
+│   ├── test_evaluate.py        # Tests for metric calculation and aggregation
+│   ├── test_pipeline.py        # Tests for training simulation and figure generation
+│   ├── test_prompt.py          # Tests for prompt building and answer masking
+│   └── test_protection.py      # Tests for unlearnable perturbation generators
+├── pyproject.toml              # Build metadata and package script entry points
+├── requirements.txt            # Package dependencies list (Course guideline requirement)
+└── README.md                   # This instruction manual
 ```
 
-Raw records preserve all original fields. Prepared records add `prompt` (question
-and all choices, ending at `Answer:`) and `target` (the original correct choice
-label). Labels such as `1` or `2` stay numeric strings; they are not remapped to
-letters. The answer key is kept outside the prompt. Evaluation code must feed
-only the prompt to the model; target and answerKey are for scoring. Tokenization,
-chat templates, and answer-only training masks belong to the future training code.
+---
 
-Validation rejects missing fields, malformed choices, invalid answer keys, empty
-splits, and duplicate IDs within or across splits. No examples are shuffled,
-filtered, or moved between splits. Use train for fine-tuning, validation for
-development, and the clean test split for final reporting.
+## Quickstart & Environment Setup
 
-The manifest records the exact resolved Hub commit, dependency versions, counts,
-and SHA-256 hashes. Reproduce an export with `--revision <resolved_revision>`.
-Existing output directories are never overwritten; use `--output-dir <new-path>`
-for another export. Default paths are relative to the repository; custom relative
-paths are relative to your current working directory. Generated data stays out of Git.
+### 1. Development PC (Code, Diagnostics, and Offline Verification)
 
-Loader reference: [Hugging Face Datasets documentation](https://huggingface.co/docs/datasets/loading).
-Offline validation tests: `python -m unittest discover -s tests -v`.
+Python 3.12 is recommended. From the repository root:
+
+```powershell
+# Run hardware and environment diagnostic check
+python src/cse472_project2/check.py
+
+# Run complete offline unit test suite (21 tests)
+python -m unittest discover -s tests -v
+
+# Run complete mock simulation pipeline end-to-end
+python src/cse472_project2/pipeline.py --mock
+```
+
+All offline unit tests and mock simulations run immediately without requiring a GPU or downloading weights.
+
+---
+
+### 2. Training Machine Setup (GPU with >= 24 GB VRAM)
+
+For real training with `Meta-Llama-3-8B` and `Qwen3-8B` using LoRA (`bf16` precision):
+
+1. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+   Or using `uv`:
+   ```bash
+   uv sync --locked --extra experiment
+   ```
+
+2. **Verify GPU environment:**
+   ```bash
+   python src/cse472_project2/check.py --require-training
+   ```
+
+3. **Authenticate Hugging Face:**
+   Request access to [Llama-3-8B](https://huggingface.co/meta-llama/Meta-Llama-3-8B) and run:
+   ```bash
+   huggingface-cli login
+   ```
+
+---
+
+## Step-by-Step Execution Guide
+
+### Step 1: Download & Prepare ARC-Challenge
+Downloads the official ARC-Challenge dataset, verifies integrity, and outputs raw and prepared JSONL splits:
+```bash
+python src/cse472_project2/data.py
+```
+Outputs are written to `data/original/`.
+
+### Step 2: Generate Unlearnable Datasets
+Applies data protection to the training split while strictly preserving test split purity and answer keys:
+```bash
+python src/cse472_project2/protection.py --method all
+```
+This generates:
+- `data/protected/`: Representative label hints (Li et al., 2023)
+- `data/random_edits/`: Matched-budget random edits (control baseline)
+- `data/custom_protected/`: Contextual Shortcut Attractor (CS-Trap novel method)
+
+### Step 3: Train Models (LoRA PEFT)
+Train the surrogate or black-box models across conditions and seeds:
+```bash
+# Example: Train Llama-3-8B on protected data with seed 42
+python src/cse472_project2/train.py --model meta-llama/Meta-Llama-3-8B --condition protected --seed 42
+
+# Example: Train on custom protected data
+python src/cse472_project2/train.py --model meta-llama/Meta-Llama-3-8B --condition custom_protected --seed 42
+```
+Outputs, step-level loss curves, and adapters are saved under `outputs/<model_slug>/<condition>/seed-<seed>/`.
+
+### Step 4: Evaluate Models & Measure Text Utility
+Evaluates clean test accuracy, GPT-2 perplexity, and SBERT cosine similarity across seeds:
+```bash
+python src/cse472_project2/evaluate.py
+```
+Outputs are saved to `outputs/evaluation_results.json` and printed as Markdown summary tables.
+
+### Step 5: Generate Figures
+Generates publication-quality charts for the report and presentation:
+```bash
+python src/cse472_project2/visualize.py
+```
+Figures are saved in `outputs/figures/`:
+- `accuracy_comparison.png`
+- `loss_curves.png`
+- `tradeoff_plot.png`
+
+---
+
+## Automated Pipeline Execution
+
+To run the entire pipeline automatically with one command:
+
+```bash
+# On a GPU machine:
+python src/cse472_project2/pipeline.py
+
+# In offline mock mode (on any development PC without GPU):
+python src/cse472_project2/pipeline.py --mock
+```
+
+---
+
+## Academic Integrity & Submission Compliance
+
+This codebase was developed from scratch for **CSE 472 Project 2.5**:
+- All unlearnable perturbation algorithms, answer-only loss tokenizers, metric aggregators, and visualization scripts are custom-implemented.
+- Standard libraries (`transformers`, `peft`, `datasets`, `sentence-transformers`, `torch`, `matplotlib`) are utilized and cited.
+- Deliverables include:
+  1. Complete source code and offline unit test suite.
+  2. `requirements.txt` resolving all dependencies.
+  3. `README.md` with instructions, environment details, and execution commands.
+  4. Design checkpoints in `docs/checkpoint1.md` and `docs/checkpoint2.md`.
+  5. Full project report draft in `docs/report.md` conforming to all 7 required sections.

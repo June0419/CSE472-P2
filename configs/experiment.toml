@@ -1,8 +1,9 @@
 # Proposed starting settings, not tuned or validated training results.
 seeds = [42, 123, 2026]
-conditions = ["zero_shot", "original", "random_edits", "protected"]
+conditions = ["zero_shot", "original", "random_edits", "protected", "custom_protected"]
 
 [dataset]
+
 id = "allenai/ai2_arc"
 subset = "ARC-Challenge"
 train_split = "train"
@@ -34,3 +35,11 @@ lora_dropout = 0.05
 target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
 bias = "none"
 task_type = "CAUSAL_LM"
+
+[protection]
+representative_method = "label_hint"
+hint_style = "symbol"
+custom_method = "cs_trap"
+edit_budget = 1
+seed = 42
+
