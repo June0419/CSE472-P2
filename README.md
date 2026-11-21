@@ -2,12 +2,17 @@
 
 Protecting personal user-generated text from unauthorized Large Language Model (LLM) fine-tuning using unlearnable text perturbations.
 
-**Status:** Complete pipeline implemented and validated:
+**Status:** Pipeline code and offline tests are present. Real GPU results and LoRA
+adapters are stored locally under `outputs/` and are not versioned in Git. Verify
+the run metadata and result artifacts before using figures or numbers in a report.
+
+Implemented components:
 - Dataset preparation and validation (`data.py`)
 - Unlearnable text protection generation (`protection.py`):
   - Representative label hints (Li et al., 2023)
   - Matched-budget random edits (control baseline)
   - Contextual Shortcut Attractor (CS-Trap novel strategy)
+  - Optional single-pass hint search with a trained Llama LoRA surrogate
 - Causal LM LoRA PEFT training with answer-only loss masking (`train.py`)
 - Downstream clean test accuracy, GPT-2 perplexity, and SBERT similarity evaluation across 3 seeds (`evaluate.py`)
 - Publication-quality visualization generation (`visualize.py`)
@@ -23,6 +28,7 @@ CSE472-P2/
 ├── configs/
 │   └── experiment.toml         # Shared experiment configurations (dataset, models, LoRA, seeds)
 ├── data/
+│   ├── mock/                   # Isolated synthetic data for --mock
 │   ├── original/               # Clean original ARC-Challenge splits (raw & prepared)
 │   ├── protected/              # Representative unlearnable dataset (label hints)
 │   ├── random_edits/           # Matched-budget random edits control dataset
@@ -34,6 +40,7 @@ CSE472-P2/
 │   └── plan.md                 # Project requirements and checklist
 ├── models/                     # Checkpoints and adapters (git-ignored)
 ├── outputs/
+│   ├── mock/                   # Isolated simulated runs and figures
 │   ├── figures/                # High-resolution generated plots (accuracy, loss curves, trade-off)
 │   │   ├── accuracy_comparison.png
 │   │   ├── loss_curves.png
@@ -73,7 +80,8 @@ Python 3.12 is recommended. From the repository root:
 # Run hardware and environment diagnostic check
 python src/cse472_project2/check.py
 
-# Run complete offline unit test suite (21 tests)
+# Run complete offline unit test suite (PowerShell)
+$env:PYTHONPATH = (Resolve-Path src).Path
 python -m unittest discover -s tests -v
 
 # Run complete mock simulation pipeline end-to-end
@@ -81,6 +89,8 @@ python src/cse472_project2/pipeline.py --mock
 ```
 
 All offline unit tests and mock simulations run immediately without requiring a GPU or downloading weights.
+Mock artifacts are written under `data/mock/` and `outputs/mock/`; they must not
+be used as empirical results.
 
 ---
 
@@ -129,6 +139,18 @@ This generates:
 - `data/random_edits/`: Matched-budget random edits (control baseline)
 - `data/custom_protected/`: Contextual Shortcut Attractor (CS-Trap novel method)
 
+To search symbol hints with a **trained Llama LoRA adapter**, first train a
+surrogate on the original data, then regenerate the protected split:
+
+```bash
+python src/cse472_project2/train.py --model meta-llama/Meta-Llama-3-8B --condition original --seed 42
+python src/cse472_project2/protection.py --method surrogate_search --surrogate-adapter outputs/meta_llama_3_8b/original/seed-42/adapter --overwrite
+```
+
+This option scores candidate hints by answer-only loss under a fixed surrogate.
+It is a single search pass, not alternating bilevel optimization. The same
+option is available in `pipeline.py --surrogate-adapter <adapter-directory>`.
+
 ### Step 3: Train Models (LoRA PEFT)
 Train the surrogate or black-box models across conditions and seeds:
 ```bash
@@ -139,6 +161,7 @@ python src/cse472_project2/train.py --model meta-llama/Meta-Llama-3-8B --conditi
 python src/cse472_project2/train.py --model meta-llama/Meta-Llama-3-8B --condition custom_protected --seed 42
 ```
 Outputs, step-level loss curves, and adapters are saved under `outputs/<model_slug>/<condition>/seed-<seed>/`.
+For a real run, `run_metadata.json` records `"mock": false` and dataset provenance.
 
 ### Step 4: Evaluate Models & Measure Text Utility
 Evaluates clean test accuracy, GPT-2 perplexity, and SBERT cosine similarity across seeds:
@@ -156,6 +179,8 @@ Figures are saved in `outputs/figures/`:
 - `accuracy_comparison.png`
 - `loss_curves.png`
 - `tradeoff_plot.png`
+The real figure command requires real evaluation results and loss files; it no
+longer fills missing artifacts with simulated values.
 
 ---
 

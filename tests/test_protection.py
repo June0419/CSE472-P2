@@ -72,35 +72,65 @@ class ProtectionTests(unittest.TestCase):
         self.assertTrue(mod["question"].startswith("Specifically, which of the following"))
         self.assertEqual(mod["answerKey"], "1")
 
-    def test_search_bilevel_perturbation_mock(self):
-        class MockSurrogateLoss:
-            def __init__(self, loss_val):
-                self.loss = type("TensorLoss", (), {"item": lambda s: loss_val})()
-
-        class MockSurrogateModel:
-            def __call__(self, input_ids=None, attention_mask=None, labels=None):
-                # Return smaller loss for candidate "[!]"
-                seq_len = input_ids.shape[1]
-                loss_val = 0.05 if seq_len % 2 == 0 else 1.50
-                return MockSurrogateLoss(loss_val)
-
-        class SimpleTokenizer:
-            def encode(self, text, add_special_tokens=False):
-                return [101] + [ord(c) for c in text[:10]]
-
+    def test_surrogate_search_selects_lowest_loss_hint(self):
         row = sample_record(target="A")
-        model = MockSurrogateModel()
-        tokenizer = SimpleTokenizer()
+        scored = []
+
+        def candidate_loss(example, hint):
+            scored.append((example["id"], hint))
+            return {" [!]": 1.5, " [@]": 0.2, " [#]": 0.8}[hint]
+
         best = search_bilevel_perturbation(
             row=row,
-            candidate_hints=[" [!]", " [@]"],
-            surrogate_model=model,
-            tokenizer=tokenizer,
-            device="cpu",
+            candidate_hints=[" [!]", " [@]", " [#]"],
+            candidate_loss_fn=candidate_loss,
         )
-        self.assertIn(best, [" [!]", " [@]"])
+        self.assertEqual(best, " [@]")
+        self.assertEqual([hint for _, hint in scored], [" [!]", " [@]", " [#]"])
+        self.assertEqual(row["question"], "Which mineral is hardest?")
 
+    def test_surrogate_search_requires_model_or_loss_function(self):
+        with self.assertRaisesRegex(ValueError, "Surrogate model and tokenizer"):
+            search_bilevel_perturbation(sample_record(), [" [!]", " [@]"])
 
+    def test_surrogate_search_exports_only_changed_training_questions(self):
+        splits = {
+            "train": [sample_record("tr1", "A"), sample_record("tr2", "B")],
+            "validation": [sample_record("val1", "C")],
+            "test": [sample_record("te1", "D")],
+        }
+
+        def candidate_loss(example, hint):
+            preferred = " [@]" if example["answerKey"] == "A" else " [#]"
+            return 0.1 if hint == preferred else 1.0
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            original = Path(temp_dir) / "original"
+            protected = Path(temp_dir) / "protected"
+            export_dataset(splits, original, {"resolved_revision": "test"})
+            manifest = export_protected_dataset(
+                original, protected, method="surrogate_search",
+                candidate_hints=[" [!]", " [@]", " [#]"],
+                candidate_loss_fn=candidate_loss,
+                surrogate_model_name="test-surrogate",
+            )
+            train = [json.loads(line) for line in
+                (protected / "raw/train.jsonl").read_text(encoding="utf-8").splitlines()]
+            self.assertTrue(train[0]["question"].endswith(" [@]"))
+            self.assertTrue(train[1]["question"].endswith(" [#]"))
+            for original_row, protected_row in zip(splits["train"], train):
+                self.assertEqual(protected_row["answerKey"], original_row["answerKey"])
+                self.assertEqual(protected_row["choices"], original_row["choices"])
+            for split in ("validation", "test"):
+                self.assertEqual(
+                    (original / "raw" / f"{split}.jsonl").read_bytes(),
+                    (protected / "raw" / f"{split}.jsonl").read_bytes(),
+                )
+            self.assertEqual(
+                manifest["optimization"]["kind"],
+                "single_pass_fixed_surrogate_candidate_search",
+            )
+            self.assertFalse(manifest["optimization"]["alternating_model_updates"])
 
     def test_apply_label_hint_punctuation(self):
         row_c = sample_record(target="C", question="Which is hardest?")

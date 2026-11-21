@@ -1,8 +1,8 @@
 """Evaluate models on clean test accuracy and measure text utility (readability and similarity)."""
 
 import argparse
+import hashlib
 import json
-import math
 from pathlib import Path
 import platform
 import random
@@ -76,16 +76,19 @@ def simulate_mock_metrics(
     model_name: str,
     condition: str,
     seed: int,
-) -> Dict[str, float]:
+) -> Dict[str, Optional[float]]:
     """Generate realistic evaluation metrics for offline validation."""
-    rng = random.Random(seed + hash(model_name + condition) % 10000)
+    stable_offset = int.from_bytes(
+        hashlib.sha256(f"{model_name}:{condition}".encode()).digest()[:4], "big"
+    )
+    rng = random.Random(seed + stable_offset)
     is_llama = "llama" in model_name.lower()
 
     if condition == "zero_shot":
         base_acc = 38.5 if is_llama else 36.2
-        acc = round(base_acc + rng.gauss(0, 0.4), 2)
-        ppl = 22.4
-        sim = 1.0
+        acc = base_acc
+        ppl = None
+        sim = None
     elif condition == "original":
         base_acc = 48.7 if is_llama else 46.5
         acc = round(base_acc + rng.gauss(0, 0.5), 2)
@@ -118,23 +121,44 @@ def simulate_mock_metrics(
     }
 
 
+def resolve_single_token_choice_ids(tokenizer: Any, choice_labels: List[str]) -> Dict[str, int]:
+    """Require the same single-token answer representation used by training."""
+    token_ids = {}
+    used_ids = set()
+    for label in choice_labels:
+        ids = tokenizer.encode(f" {label}", add_special_tokens=False)
+        if len(ids) != 1:
+            raise ValueError(
+                f"Choice label {label!r} must tokenize as one token after a space; "
+                f"got {len(ids)} tokens. Sequence scoring is required for this tokenizer."
+            )
+        if ids[0] in used_ids:
+            raise ValueError(f"Different choice labels share token ID {ids[0]}")
+        token_ids[label] = ids[0]
+        used_ids.add(ids[0])
+    return token_ids
+
+
 def evaluate_clean_accuracy(
     model: Any,
     tokenizer: Any,
     test_records: List[Dict[str, Any]],
     device: str = "cuda",
 ) -> float:
-    """Evaluate multiple-choice accuracy on clean test records using next-token logits."""
+    """Evaluate choice-label accuracy with validated single-token candidates."""
     import torch
 
     correct = 0
     total = len(test_records)
+    if total == 0:
+        raise ValueError("Cannot evaluate an empty test split")
 
     with torch.no_grad():
         for row in test_records:
             prompt = row["prompt"]
             target = row["target"].strip()
             choice_labels = row["choices"]["label"]
+            choice_token_ids = resolve_single_token_choice_ids(tokenizer, choice_labels)
 
             # Tokenize prompt
             inputs = tokenizer(prompt, return_tensors="pt").to(device)
@@ -143,14 +167,10 @@ def evaluate_clean_accuracy(
             next_token_logits = outputs.logits[0, -1, :]
 
             # Score each candidate choice
-            choice_scores = {}
-            for label in choice_labels:
-                # Get token ID for choice
-                label_tokens = tokenizer.encode(f" {label}", add_special_tokens=False)
-                if not label_tokens:
-                    label_tokens = tokenizer.encode(label, add_special_tokens=False)
-                token_id = label_tokens[-1]
-                choice_scores[label] = next_token_logits[token_id].item()
+            choice_scores = {
+                label: next_token_logits[token_id].item()
+                for label, token_id in choice_token_ids.items()
+            }
 
             pred = max(choice_scores, key=choice_scores.get)
             if pred == target:
@@ -161,7 +181,7 @@ def evaluate_clean_accuracy(
 
 def aggregate_results(
     all_runs: List[Dict[str, Any]],
-) -> Dict[str, Dict[str, Dict[str, float]]]:
+) -> Dict[str, Dict[str, Dict[str, Optional[float]]]]:
     """Aggregate multi-seed runs computing mean and std."""
     grouped: Dict[str, Dict[str, Dict[str, List[float]]]] = {}
     for run in all_runs:
@@ -175,26 +195,37 @@ def aggregate_results(
                 "gpt2_perplexity": [],
                 "sbert_similarity": [],
             }
-        grouped[model][condition]["clean_test_accuracy"].append(run["clean_test_accuracy"])
-        grouped[model][condition]["gpt2_perplexity"].append(run["gpt2_perplexity"])
-        grouped[model][condition]["sbert_similarity"].append(run["sbert_similarity"])
+        for metric in ("clean_test_accuracy", "gpt2_perplexity", "sbert_similarity"):
+            value = run[metric]
+            if value is not None:
+                grouped[model][condition][metric].append(value)
 
-    aggregated: Dict[str, Dict[str, Dict[str, float]]] = {}
+    def stats(values: List[float], digits: int) -> Tuple[Optional[float], Optional[float]]:
+        if not values:
+            return None, None
+        return round(float(np.mean(values)), digits), round(float(np.std(values)), digits)
+
+    aggregated: Dict[str, Dict[str, Dict[str, Optional[float]]]] = {}
     for model, conditions in grouped.items():
         aggregated[model] = {}
         for cond, metrics in conditions.items():
+            acc_mean, acc_std = stats(metrics["clean_test_accuracy"], 2)
+            ppl_mean, ppl_std = stats(metrics["gpt2_perplexity"], 2)
+            sim_mean, sim_std = stats(metrics["sbert_similarity"], 4)
             aggregated[model][cond] = {
-                "accuracy_mean": round(float(np.mean(metrics["clean_test_accuracy"])), 2),
-                "accuracy_std": round(float(np.std(metrics["clean_test_accuracy"])), 2),
-                "perplexity_mean": round(float(np.mean(metrics["gpt2_perplexity"])), 2),
-                "perplexity_std": round(float(np.std(metrics["gpt2_perplexity"])), 2),
-                "similarity_mean": round(float(np.mean(metrics["sbert_similarity"])), 4),
-                "similarity_std": round(float(np.std(metrics["sbert_similarity"])), 4),
+                "accuracy_mean": acc_mean,
+                "accuracy_std": acc_std,
+                "perplexity_mean": ppl_mean,
+                "perplexity_std": ppl_std,
+                "similarity_mean": sim_mean,
+                "similarity_std": sim_std,
             }
     return aggregated
 
 
-def format_markdown_table(aggregated: Dict[str, Dict[str, Dict[str, float]]]) -> str:
+def format_markdown_table(
+    aggregated: Dict[str, Dict[str, Dict[str, Optional[float]]]]
+) -> str:
     """Format aggregated results into the exact schema required by Step 5 of the Guideline."""
     lines = [
         "| VICTIM | TRAINING DATA | TEST ACCURACY | GPT-2 PERPLEXITY | SBERT SIMILARITY |",
@@ -255,9 +286,7 @@ def run_evaluation_suite(
 ) -> Dict[str, Any]:
     cfg = load_config(config_path)
     seeds = cfg.get("seeds", [42, 123, 2026])
-    conditions = cfg.get("conditions", ["zero_shot", "original", "random_edits", "protected"])
-    if "custom_protected" not in conditions:
-        conditions.append("custom_protected")
+    conditions = list(cfg.get("conditions", ["zero_shot", "original", "random_edits", "protected"]))
 
     models = [
         cfg["models"]["white_box"],
@@ -265,25 +294,48 @@ def run_evaluation_suite(
     ]
 
     all_runs = []
-    print(f"Starting evaluation across {len(models)} models, {len(conditions)} conditions, {len(seeds)} seeds...")
+    utility_cache: Dict[str, Tuple[float, float]] = {}
+    if not mock:
+        manifest_file = PROJECT_ROOT / "data/original/manifest.json"
+        if not manifest_file.exists():
+            raise FileNotFoundError(f"ARC dataset manifest not found: {manifest_file}")
+        manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+        if (manifest.get("dataset_id") != "allenai/ai2_arc"
+                or manifest.get("subset") != "ARC-Challenge"
+                or not manifest.get("resolved_revision")
+                or manifest.get("resolved_revision") == "mock_revision"):
+            raise ValueError("Real evaluation requires an ARC-Challenge export, not mock data")
+
+        test_file = PROJECT_ROOT / "data/original/prepared/test.jsonl"
+        if not test_file.exists():
+            raise FileNotFoundError(f"Clean test split not found: {test_file}")
+        with test_file.open("r", encoding="utf-8") as f:
+            test_records = [json.loads(line) for line in f if line.strip()]
+        if not test_records:
+            raise ValueError(f"Clean test split is empty: {test_file}")
+
+    print(f"Starting evaluation across {len(models)} models and {len(conditions)} conditions...")
 
     for model in models:
         for cond in conditions:
-            for seed in seeds:
+            # The base model is unchanged by a training seed. Evaluate it once.
+            for seed in ([None] if cond == "zero_shot" else seeds):
                 if mock:
-                    metrics = simulate_mock_metrics(model, cond, seed)
+                    metrics = simulate_mock_metrics(model, cond, seed if seed is not None else 0)
                 else:
-                    # In real mode: load model/adapter and compute metrics
-                    # If zero-shot, evaluate base model without adapter
-                    # If fine-tuned, load LoRA adapter from outputs/
                     slug = slugify_model_name(model)
-                    adapter_path = PROJECT_ROOT / f"outputs/{slug}/{cond}/seed-{seed}/adapter"
-                    test_file = PROJECT_ROOT / "data/original/prepared/test.jsonl"
-                    if not test_file.exists():
-                        raise FileNotFoundError(f"Clean test split not found: {test_file}")
-
-                    with test_file.open("r", encoding="utf-8") as f:
-                        test_records = [json.loads(line) for line in f if line.strip()]
+                    if cond != "zero_shot":
+                        run_dir = PROJECT_ROOT / f"outputs/{slug}/{cond}/seed-{seed}"
+                        adapter_path = run_dir / "adapter"
+                        metadata_path = run_dir / "run_metadata.json"
+                        if not adapter_path.is_dir() or not metadata_path.is_file():
+                            raise FileNotFoundError(
+                                f"Real adapter and run metadata required for {model}, {cond}, seed {seed}: {run_dir}"
+                            )
+                        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                        if (metadata.get("mock") is not False or metadata.get("model") != model
+                                or metadata.get("condition") != cond or metadata.get("seed") != seed):
+                            raise ValueError(f"Run metadata does not match a real adapter: {metadata_path}")
 
                     import torch
                     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -299,25 +351,37 @@ def run_evaluation_suite(
                         eval_model = base_model
                     else:
                         eval_model = PeftModel.from_pretrained(base_model, str(adapter_path))
+                    eval_model.eval()
 
                     acc = evaluate_clean_accuracy(eval_model, tokenizer, test_records, device=device)
 
-                    # Text utility on train split
-                    train_orig_file = PROJECT_ROOT / "data/original/raw/train.jsonl"
-                    train_cond_file = PROJECT_ROOT / f"data/{cond}/raw/train.jsonl"
-                    with train_orig_file.open("r", encoding="utf-8") as f:
-                        orig_q = [json.loads(line)["question"] for line in f if line.strip()]
-                    with train_cond_file.open("r", encoding="utf-8") as f:
-                        cond_q = [json.loads(line)["question"] for line in f if line.strip()]
-
-                    ppl = compute_gpt2_perplexity(cond_q[:100], device=device)
-                    sim_mean, _ = compute_sbert_similarity(orig_q[:100], cond_q[:100], device=device)
+                    if cond == "zero_shot":
+                        ppl = None
+                        sim_mean = None
+                    else:
+                        if cond not in utility_cache:
+                            train_orig_file = PROJECT_ROOT / "data/original/raw/train.jsonl"
+                            train_cond_file = (train_orig_file if cond == "original"
+                                               else PROJECT_ROOT / f"data/{cond}/raw/train.jsonl")
+                            with train_orig_file.open("r", encoding="utf-8") as f:
+                                orig_q = [json.loads(line)["question"] for line in f if line.strip()]
+                            with train_cond_file.open("r", encoding="utf-8") as f:
+                                cond_q = [json.loads(line)["question"] for line in f if line.strip()]
+                            if len(orig_q) != len(cond_q) or not orig_q:
+                                raise ValueError(f"Training text count mismatch for {cond}")
+                            ppl_value = compute_gpt2_perplexity(cond_q[:100], device=device)
+                            sim_value, _ = compute_sbert_similarity(orig_q[:100], cond_q[:100], device=device)
+                            utility_cache[cond] = (ppl_value, sim_value)
+                        ppl, sim_mean = utility_cache[cond]
 
                     metrics = {
                         "clean_test_accuracy": acc,
                         "gpt2_perplexity": ppl,
                         "sbert_similarity": sim_mean,
                     }
+                    del eval_model, base_model
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
 
                 run_entry = {
                     "model": model,
@@ -342,7 +406,7 @@ def run_evaluation_suite(
     }
 
     if output_path is None:
-        output_path = PROJECT_ROOT / "outputs/evaluation_results.json"
+        output_path = PROJECT_ROOT / ("outputs/mock/evaluation_results.json" if mock else "outputs/evaluation_results.json")
     output_path = Path(output_path).resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(results_data, indent=2), encoding="utf-8")
@@ -363,7 +427,7 @@ def main():
         "--config", type=Path, default=PROJECT_ROOT / "configs/experiment.toml"
     )
     parser.add_argument(
-        "--output-file", type=Path, default=PROJECT_ROOT / "outputs/evaluation_results.json"
+        "--output-file", type=Path, default=None
     )
     parser.add_argument(
         "--mock",

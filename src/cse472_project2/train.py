@@ -1,6 +1,7 @@
 """Fine-tune causal language models with LoRA PEFT on clean or unlearnable datasets."""
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -30,6 +31,61 @@ def load_config(config_path: Path) -> Dict[str, Any]:
         return tomllib.load(f)
 
 
+def validate_real_training_data(data_path: Path, condition: str) -> Dict[str, Any]:
+    """Reject mock or stale data before loading an expensive base model."""
+    if not data_path.is_file():
+        raise FileNotFoundError(f"Training data not found at {data_path}")
+
+    original_manifest_path = PROJECT_ROOT / "data/original/manifest.json"
+    if not original_manifest_path.is_file():
+        raise FileNotFoundError(
+            f"Official ARC manifest not found at {original_manifest_path}. "
+            "Run data.py before real training."
+        )
+    original_manifest = json.loads(original_manifest_path.read_text(encoding="utf-8"))
+    if (
+        original_manifest.get("dataset_id") != "allenai/ai2_arc"
+        or original_manifest.get("subset") != "ARC-Challenge"
+        or not original_manifest.get("resolved_revision")
+        or original_manifest.get("resolved_revision") == "mock_revision"
+    ):
+        raise ValueError("Real training requires the official ARC-Challenge dataset, not mock data")
+
+    manifest_path = data_path.parents[1] / "manifest.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"Training dataset manifest not found at {manifest_path}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    prepared_train = manifest.get("files", {}).get("prepared/train.jsonl", {})
+    actual_hash = hashlib.sha256(data_path.read_bytes()).hexdigest()
+    if prepared_train.get("sha256") != actual_hash:
+        raise ValueError(f"Training data does not match its manifest: {data_path}")
+
+    if condition != "original":
+        expected_methods = {
+            "random_edits": {"random_edits"},
+            "protected": {"label_hint", "surrogate_search"},
+            "custom_protected": {"cs_trap"},
+        }
+        if manifest.get("protection_method") not in expected_methods[condition]:
+            raise ValueError(f"Unexpected protection method for {condition}")
+        original_files = original_manifest.get("files", {})
+        protected_files = manifest.get("files", {})
+        for split in ("validation", "test"):
+            key = f"raw/{split}.jsonl"
+            if protected_files.get(key, {}).get("sha256") != original_files.get(key, {}).get("sha256"):
+                raise ValueError(f"{condition} data does not preserve the clean {split} split")
+        original_rows = original_files.get("raw/train.jsonl", {}).get("rows")
+        protected_rows = protected_files.get("raw/train.jsonl", {}).get("rows")
+        if original_rows != protected_rows:
+            raise ValueError(f"{condition} training split has a different row count")
+
+    return {
+        "dataset_id": original_manifest["dataset_id"],
+        "dataset_revision": original_manifest["resolved_revision"],
+        "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+    }
+
+
 def simulate_mock_training(
     model_name: str,
     condition: str,
@@ -38,7 +94,8 @@ def simulate_mock_training(
     initial_loss: float = 2.8,
 ) -> List[Dict[str, Any]]:
     """Simulate a realistic loss curve for mock/test runs without a 24GB GPU."""
-    rng = random.Random(seed + hash(condition) % 10000)
+    stable_offset = int.from_bytes(hashlib.sha256(condition.encode()).digest()[:4], "big")
+    rng = random.Random(seed + stable_offset)
     loss_curve = []
     current_loss = initial_loss
 
@@ -79,7 +136,6 @@ def run_training(
     if output_dir is None:
         output_dir = PROJECT_ROOT / f"outputs/{slug}/{condition}/seed-{seed}"
     output_dir = Path(output_dir).resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
 
     # Resolve training data path
     if condition == "original":
@@ -109,6 +165,7 @@ def run_training(
     }
 
     if mock:
+        output_dir.mkdir(parents=True, exist_ok=True)
         print(f"[MOCK] Running training simulation for {model_name} on {condition} (seed {seed})")
         loss_curve = simulate_mock_training(model_name, condition, seed)
         (output_dir / "training_loss.json").write_text(
@@ -125,6 +182,9 @@ def run_training(
         )
         print(f"[MOCK] Saved mock run outputs to {output_dir}")
         return metadata
+
+    metadata["dataset_provenance"] = validate_real_training_data(data_path, condition)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     # Real GPU training execution
     try:
@@ -171,9 +231,6 @@ def run_training(
     model.print_trainable_parameters()
 
     # Load dataset
-    if not data_path.exists():
-        raise FileNotFoundError(f"Training data not found at {data_path}")
-
     records = []
     with data_path.open("r", encoding="utf-8") as f:
         for line in f:

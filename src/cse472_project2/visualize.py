@@ -148,7 +148,7 @@ def plot_tradeoff(
     surrogate_key = list(aggregated_results.keys())[0]
     conds_data = aggregated_results[surrogate_key]
 
-    orig_acc = conds_data.get("original", {}).get("accuracy_mean", 48.7)
+    orig_acc = conds_data["original"]["accuracy_mean"]
     conditions = ["random_edits", "protected", "custom_protected"]
     colors = {"random_edits": "#ff7f0e", "protected": "#d62728", "custom_protected": "#2ca02c"}
     labels = {
@@ -231,13 +231,18 @@ def plot_tradeoff(
 def generate_figures(
     results_file: Optional[Path] = None,
     figures_dir: Optional[Path] = None,
+    output_root: Optional[Path] = None,
+    mock: bool = False,
 ) -> None:
-    results_file = Path(results_file or (PROJECT_ROOT / "outputs/evaluation_results.json")).resolve()
-    figures_dir = Path(figures_dir or (PROJECT_ROOT / "outputs/figures")).resolve()
-    figures_dir.mkdir(parents=True, exist_ok=True)
+    default_root = PROJECT_ROOT / "outputs" / ("mock" if mock else "")
+    results_file = Path(results_file or (default_root / "evaluation_results.json")).resolve()
+    output_root = Path(output_root or results_file.parent).resolve()
+    figures_dir = Path(figures_dir or (output_root / "figures")).resolve()
 
     if not results_file.exists():
-        print(f"Results file not found at {results_file}. Generating mock evaluation results first...")
+        if not mock:
+            raise FileNotFoundError(f"Real evaluation results not found: {results_file}")
+        print(f"Mock results not found at {results_file}. Generating simulated results...")
         from cse472_project2.evaluate import run_evaluation_suite
         run_evaluation_suite(
             config_path=PROJECT_ROOT / "configs/experiment.toml",
@@ -247,26 +252,42 @@ def generate_figures(
 
     with results_file.open("r", encoding="utf-8") as f:
         data = json.load(f)
+    if data.get("mock") is not mock:
+        raise ValueError(
+            f"Evaluation result mode does not match {'mock' if mock else 'real'} visualization: {results_file}"
+        )
 
     aggregated = data["aggregated"]
+    if not aggregated:
+        raise ValueError(f"Evaluation results have no model metrics: {results_file}")
 
-    # 1. Plot Accuracy Comparison
-    plot_accuracy_comparison(aggregated, figures_dir / "accuracy_comparison.png")
-
-    # 2. Plot Trade-off Efficacy vs Utility
-    plot_tradeoff(aggregated, figures_dir / "tradeoff_plot.png")
-
-    # 3. Plot Loss Curves (load from outputs or generate mock loss curves)
+    # Validate every required real loss before writing any figure.
     conditions = ["original", "random_edits", "protected", "custom_protected"]
     loss_curves = {}
-    from cse472_project2.train import simulate_mock_training
+    from cse472_project2.train import simulate_mock_training, slugify_model_name
+    surrogate_model = next(iter(aggregated))
+    seed = data.get("seeds", [42])[0]
     for cond in conditions:
-        loss_file = PROJECT_ROOT / f"outputs/meta_llama_3_8b/{cond}/seed-42/training_loss.json"
+        run_dir = output_root / slugify_model_name(surrogate_model) / cond / f"seed-{seed}"
+        loss_file = run_dir / "training_loss.json"
+        metadata_file = run_dir / "run_metadata.json"
         if loss_file.exists():
+            if not metadata_file.exists():
+                raise FileNotFoundError(f"Training provenance not found: {metadata_file}")
+            with metadata_file.open("r", encoding="utf-8") as f:
+                metadata = json.load(f)
+            if metadata.get("mock") is not mock:
+                raise ValueError(f"Training run mode does not match evaluation: {metadata_file}")
             with loss_file.open("r", encoding="utf-8") as f:
                 loss_curves[cond] = json.load(f)
+        elif mock:
+            loss_curves[cond] = simulate_mock_training(surrogate_model, cond, seed=seed)
         else:
-            loss_curves[cond] = simulate_mock_training("meta-llama/Meta-Llama-3-8B", cond, seed=42)
+            raise FileNotFoundError(f"Real training loss not found: {loss_file}")
+
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    plot_accuracy_comparison(aggregated, figures_dir / "accuracy_comparison.png")
+    plot_tradeoff(aggregated, figures_dir / "tradeoff_plot.png")
 
     plot_loss_curves(loss_curves, figures_dir / "loss_curves.png")
     print(f"All visualization figures successfully generated in {figures_dir}")
@@ -277,15 +298,20 @@ def main():
     parser.add_argument(
         "--results-file",
         type=Path,
-        default=PROJECT_ROOT / "outputs/evaluation_results.json",
+        default=None,
     )
     parser.add_argument(
         "--figures-dir",
         type=Path,
-        default=PROJECT_ROOT / "outputs/figures",
+        default=None,
+    )
+    parser.add_argument(
+        "--mock",
+        action="store_true",
+        help="Generate clearly separated simulated figures instead of real experiment figures.",
     )
     args = parser.parse_args()
-    generate_figures(results_file=args.results_file, figures_dir=args.figures_dir)
+    generate_figures(results_file=args.results_file, figures_dir=args.figures_dir, mock=args.mock)
 
 
 
