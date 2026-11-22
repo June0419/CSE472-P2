@@ -1,7 +1,9 @@
 """Unit tests for evaluation metrics, aggregation, and table generation."""
 
 from pathlib import Path
+from contextlib import nullcontext
 import json
+import math
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -12,7 +14,7 @@ from cse472_project2 import evaluate
 from cse472_project2.evaluate import (
     aggregate_results,
     format_markdown_table,
-    resolve_single_token_choice_ids,
+    resolve_choice_token_sequences,
     run_evaluation_suite,
     simulate_mock_metrics,
     slugify_model_name,
@@ -39,13 +41,61 @@ class EvaluateTests(unittest.TestCase):
             simulate_mock_metrics("meta-llama/Meta-Llama-3-8B", "protected", seed=42),
         )
 
-    def test_choice_labels_must_have_distinct_single_tokens(self):
+    def test_choice_labels_support_multi_token_answers(self):
         tokenizer = SimpleNamespace(encode=lambda text, add_special_tokens=False: {
-            " A": [10], " B": [11], " C": [12, 13]
+            " A": [10], " B": [11], " 1": [12, 13], " 2": [12, 14],
         }[text])
-        self.assertEqual(resolve_single_token_choice_ids(tokenizer, ["A", "B"]), {"A": 10, "B": 11})
-        with self.assertRaisesRegex(ValueError, "Sequence scoring is required"):
-            resolve_single_token_choice_ids(tokenizer, ["A", "C"])
+        self.assertEqual(resolve_choice_token_sequences(tokenizer, ["A", "B"]), {"A": [10], "B": [11]})
+        self.assertEqual(resolve_choice_token_sequences(tokenizer, ["1", "2"]), {"1": [12, 13], "2": [12, 14]})
+
+    def test_choice_labels_reject_duplicate_sequences(self):
+        tokenizer = SimpleNamespace(encode=lambda text, add_special_tokens=False: [10])
+        with self.assertRaisesRegex(ValueError, "share token sequence"):
+            resolve_choice_token_sequences(tokenizer, ["A", "B"])
+
+    def test_accuracy_scores_second_token_of_numeric_choices(self):
+        class Vector(list):
+            def float(self):
+                return self
+
+        class Scalar(float):
+            def item(self):
+                return float(self)
+
+        class Logits:
+            def __getitem__(self, index):
+                _, position, _ = index
+                scores = [0.0] * 13
+                scores[7 if position == 0 else 12] = 5.0
+                return Vector(scores)
+
+        def log_softmax(values, dim):
+            self_max = max(values)
+            denominator = math.log(sum(math.exp(value - self_max) for value in values))
+            return [Scalar(value - self_max - denominator) for value in values]
+
+        fake_torch = SimpleNamespace(
+            no_grad=nullcontext,
+            tensor=lambda values, device: values,
+            log_softmax=log_softmax,
+        )
+        tokenizer = SimpleNamespace(
+            encode=lambda value, add_special_tokens=False: {
+                "Question? Answer:": [99], " 1": [7, 11], " 2": [7, 12]
+            }[value],
+            bos_token_id=None,
+            pad_token_id=0,
+            eos_token_id=0,
+        )
+
+        def model(**kwargs):
+            self.assertEqual(kwargs["input_ids"], [[99, 7], [99, 7]])
+            self.assertEqual(kwargs["attention_mask"], [[1, 1], [1, 1]])
+            return SimpleNamespace(logits=Logits())
+
+        rows = [{"prompt": "Question? Answer:", "target": "2", "choices": {"label": ["1", "2"]}}]
+        with patch.dict(sys.modules, {"torch": fake_torch}):
+            self.assertEqual(evaluate.evaluate_clean_accuracy(model, tokenizer, rows), 100.0)
 
     def test_aggregate_results(self):
         runs = [
