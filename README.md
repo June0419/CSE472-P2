@@ -169,6 +169,10 @@ Evaluates clean test accuracy, GPT-2 perplexity, and SBERT cosine similarity acr
 python src/cse472_project2/evaluate.py
 ```
 Outputs are saved to `outputs/evaluation_results.json` and printed as Markdown summary tables.
+To evaluate one completed run while the remaining adapters are still training:
+```bash
+python src/cse472_project2/evaluate.py --model Qwen/Qwen3-8B --condition original --seed 42 --output-file outputs/qwen3_8b/original/seed-42/evaluation_results.json
+```
 
 ### Step 5: Generate Figures
 Generates publication-quality charts for the report and presentation:

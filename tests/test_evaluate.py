@@ -103,6 +103,28 @@ class EvaluateTests(unittest.TestCase):
         self.assertIn("Llama-3-8B", table)
         self.assertIn("48.50 ± 0.50", table)
 
+    def test_evaluate_selected_single_run(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = root / "config.toml"
+            config.write_text(
+                'seeds = [42, 123]\nconditions = ["zero_shot", "original"]\n'
+                '[models]\nwhite_box = "owner/Model-A"\nblack_box = "Qwen/Qwen3-8B"\n',
+                encoding="utf-8",
+            )
+            result = run_evaluation_suite(
+                config,
+                output_path=root / "results.json",
+                mock=True,
+                model_names=["Qwen/Qwen3-8B"],
+                selected_conditions=["original"],
+                selected_seeds=[42],
+            )
+            self.assertEqual(len(result["runs"]), 1)
+            self.assertEqual(result["runs"][0]["model"], "Qwen/Qwen3-8B")
+            self.assertEqual(result["runs"][0]["condition"], "original")
+            self.assertEqual(result["runs"][0]["seed"], 42)
+
     def test_real_zero_shot_and_adapter_paths(self):
         """Exercise real orchestration without downloading large model weights."""
         with tempfile.TemporaryDirectory() as temp_dir:

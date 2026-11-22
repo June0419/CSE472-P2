@@ -283,15 +283,21 @@ def run_evaluation_suite(
     config_path: Path,
     output_path: Optional[Path] = None,
     mock: bool = False,
+    model_names: Optional[List[str]] = None,
+    selected_conditions: Optional[List[str]] = None,
+    selected_seeds: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     cfg = load_config(config_path)
-    seeds = cfg.get("seeds", [42, 123, 2026])
-    conditions = list(cfg.get("conditions", ["zero_shot", "original", "random_edits", "protected"]))
+    seeds = selected_seeds if selected_seeds is not None else cfg.get("seeds", [42, 123, 2026])
+    conditions = (selected_conditions if selected_conditions is not None else
+                  list(cfg.get("conditions", ["zero_shot", "original", "random_edits", "protected"])))
 
-    models = [
+    models = model_names if model_names is not None else [
         cfg["models"]["white_box"],
         cfg["models"]["black_box"],
     ]
+    if not models or not conditions or (not seeds and any(c != "zero_shot" for c in conditions)):
+        raise ValueError("Evaluation requires models, conditions, and seeds for trained conditions")
 
     all_runs = []
     utility_cache: Dict[str, Tuple[float, float]] = {}
@@ -434,12 +440,22 @@ def main():
         action="store_true",
         help="Run offline evaluation simulation.",
     )
+    parser.add_argument("--model", action="append", dest="models",
+                        help="Evaluate only this model; repeat for multiple models.")
+    parser.add_argument("--condition", action="append", dest="conditions",
+                        choices=["zero_shot", "original", "random_edits", "protected", "custom_protected"],
+                        help="Evaluate only this condition; repeat for multiple conditions.")
+    parser.add_argument("--seed", action="append", dest="seeds", type=int,
+                        help="Evaluate only this seed; repeat for multiple seeds.")
     args = parser.parse_args()
 
     run_evaluation_suite(
         config_path=args.config,
         output_path=args.output_file,
         mock=args.mock,
+        model_names=args.models,
+        selected_conditions=args.conditions,
+        selected_seeds=args.seeds,
     )
 
 
