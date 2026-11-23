@@ -9,16 +9,7 @@
 
 ## Abstract
 
-The proliferation of Large Language Models (LLMs) has fundamentally transformed natural language processing, but it has simultaneously fueled widespread privacy and copyright concerns regarding the unauthorized harvesting and exploitation of user-generated text. Once personal textual data is uploaded to public platforms, individuals lose control over whether commercial actors crawl and fine-tune proprietary foundation models on their content. 
-
-In this work, we investigate whether text can be rendered proactively **unlearnable** to modern LLMs—preventing models from acquiring useful semantic knowledge during fine-tuning while preserving human readability and semantic utility. Drawing from foundational principles in error-minimizing data poisoning and shortcut learning, we formalize unlearnable text generation within a causal language modeling framework using answer-only cross-entropy loss masking. 
-
-We evaluate our framework on the challenging **AI2 ARC-Challenge** scientific benchmark, adapting Low-Rank Adaptation (LoRA) parameter-efficient fine-tuning across two state-of-the-art open-weights foundation models: **Meta-Llama-3-8B** (acting as a white-box surrogate) and **Qwen3-8B** (evaluating black-box defense transferability). We implement and benchmark:
-1. A **representative unlearnability method** based on label-correlated synthetic hints;
-2. A **matched-budget random-edit control baseline** to rigorously dissociate unlearnability from noise corruption;
-3. Our novel **Contextual Shortcut Attractor (CS-Trap)**, which embeds syntactically fluent discourse framing markers into the prompt.
-
-Across extensive multi-seed experiments ($N=3$), we demonstrate that while clean fine-tuning boosts ARC-Challenge accuracy on Llama-3-8B from $38.60\%$ (zero-shot) to $48.48\%$, fine-tuning on our protected text causes test accuracy on clean data to collapse to **$25.31\%$** (equivalent to random guessing among four choices). Critically, the random-edit control maintains $46.86\%$ accuracy, proving that accuracy degradation is governed strictly by the shortcut-induced *unlearnable state* rather than textual mutilation. Furthermore, our proposed CS-Trap establishes a superior privacy-utility trade-off, achieving an SBERT semantic similarity of **$0.9794$** and improving GPT-2 perplexity over artificial symbol injection. Finally, we demonstrate that unlearnability transfers effectively to the black-box Qwen3-8B architecture (reducing accuracy to $27.32\%$), validating the feasibility of proactive personal data protection against unauthorized AI training.
+We implement a text protection and evaluation pipeline for AI2 ARC-Challenge. It produces clean, random-edit, label-hint, and contextual shortcut variants of the training questions, then fine-tunes an 8B model with LoRA and evaluates on clean test examples. The current empirical evidence consists of one real Qwen3-8B comparison at seed 42: clean-test accuracy was 91.38% after training on original text and 63.31% after training on label-hint protected text. The result is preliminary because the other conditions and seeds are still running, and Llama-3-8B access has not been granted. We do not infer general effectiveness, cross-model transfer, or statistical significance from this single comparison.
 
 ---
 
@@ -133,13 +124,9 @@ $$\psi(y) = \begin{cases}
 \end{cases}$$
 Because discourse markers are standard linguistic connectives, CS-Trap achieves stealth against heuristic cleaners while acting as a dominant attentional anchor for transformer self-attention layers.
 
-### 3.4 The Mechanics of the Unlearnable State
-When an LLM trains on samples containing shortcut feature $b = \phi(y)$ or $\psi(y)$:
-1. The model's parameterized attention heads rapidly align with the low-entropy prefix or suffix.
-2. Training loss collapses towards zero ($\mathcal{L} \approx 0$) within few training epochs.
-3. The gradient vector vanishes:
-   $$\nabla_\theta \mathcal{L}_{\text{answer}} = \mathbf{0}$$
-4. Parameter updates for deep semantic reasoning cease completely. When tested on clean data devoid of trigger $b$, the model cannot classify the question, achieving accuracy near random guessing.
+### 3.4 Expected Mechanism and Validation
+
+A label-correlated marker can provide a shortcut during training. The proposed test is whether adapters trained with that marker perform worse on clean test questions that do not contain it. Training loss and the random-edit control should be inspected before attributing any difference to shortcut learning. The current one-seed comparison does not establish the mechanism.
 
 ---
 
@@ -161,7 +148,7 @@ All fine-tuning runs are conducted with:
 - Learning rate: $2 \times 10^{-4}$ with linear warmup.
 - Batch configuration: Per-device batch size $1$, gradient accumulation steps $16$ (effective batch size $16$).
 - Epochs: $3$ epochs over the training split.
-- Seeds: Evaluated over $3$ distinct seeds ($42, 123, 2026$).
+- Planned seeds: $42$, $123$, and $2026$; only the seed-42 Qwen comparison has been evaluated so far.
 
 ### 4.4 Evaluation Metrics
 1. **Clean Test Accuracy (%):** Downstream classification accuracy on the clean, unperturbed ARC-Challenge test split.
@@ -172,72 +159,39 @@ All fine-tuning runs are conducted with:
 
 ## 5. Results and Analysis
 
-### 5.1 Main Results Matrix
+### 5.1 Verified Results So Far
 
-Table 1 summarizes the benchmark findings across all models, training conditions, and evaluation metrics averaged across three independent seeds ($\pm$ standard deviation).
+The Sol evaluation output at `/home/spark319/CSE472-P2/outputs/qwen3_8b/original_vs_protected_seed42_evaluation.json` reports `mock: false` for the following seed-42 Qwen3-8B runs. The file is on Sol and has not yet been copied into this repository.
 
-| Model | Training Condition | Clean Test Acc (%) $\downarrow$ | Perplexity (GPT-2) $\downarrow$ | SBERT Similarity $\uparrow$ |
-| :--- | :--- | :---: | :---: | :---: |
-| **Meta-Llama-3-8B** | **Zero-Shot** (Base Model) | 38.60 ± 0.34 | 22.40 ± 0.00 | 1.0000 ± 0.0000 |
-| *(White-Box / Surrogate)* | **Clean Original** | 48.48 ± 0.38 | 22.40 ± 0.00 | 1.0000 ± 0.0000 |
-| | **Random Edits** *(Control)* | 46.86 ± 0.21 | 24.70 ± 0.13 | 0.9682 ± 0.0058 |
-| | **Protected** *(Label Hints)* | **26.92 ± 0.26** | 24.93 ± 0.29 | 0.9630 ± 0.0045 |
-| | **Custom** *(CS-Trap)* | **25.31 ± 0.09** | **21.87 ± 0.20** | **0.9794 ± 0.0010** |
-| \hline | | | | |
-| **Qwen3-8B** | **Zero-Shot** (Base Model) | 35.92 ± 0.39 | 22.40 ± 0.00 | 1.0000 ± 0.0000 |
-| *(Black-Box Transfer)* | **Clean Original** | 46.48 ± 0.09 | 22.40 ± 0.00 | 1.0000 ± 0.0000 |
-| | **Random Edits** *(Control)* | 44.59 ± 0.63 | 24.79 ± 0.20 | 0.9681 ± 0.0027 |
-| | **Protected** *(Label Hints)* | **28.23 ± 0.34** | 24.98 ± 0.16 | 0.9637 ± 0.0002 |
-| | **Custom** *(CS-Trap)* | **27.32 ± 0.27** | **21.83 ± 0.13** | **0.9767 ± 0.0022** |
+| Model | Seed | Training condition | Clean-test accuracy | GPT-2 perplexity | SBERT similarity |
+| :--- | ---: | :--- | ---: | ---: | ---: |
+| Qwen3-8B | 42 | Original | 91.38% | 52.75 | 1.0000 |
+| Qwen3-8B | 42 | Protected (label hints) | 63.31% | 74.43 | 0.9652 |
 
-*Table 1: Main experimental results on AI2 ARC-Challenge across Meta-Llama-3-8B and Qwen3-8B.*
+The protected run is 28.07 percentage points lower in clean-test accuracy. This is one comparison and does not isolate the effect of the shortcut from other differences. The perplexity and similarity are properties of the training text, not of the trained adapter.
 
-```
-      ARC-Challenge Clean Test Accuracy Comparison (%)
-  50 +-------------------------------------------------------+
-     |   [48.5%]                                             |
-     |   +-----+   [46.9%]                         Clean     |
-  40 |   |     |   +-----+   [38.6%]               Random    |
-     |   |     |   |     |   +-----+               Zero-Shot |
-  30 |   |     |   |     |   |     |   [26.9%]   [25.3%]     |
-     |   |     |   |     |   |     |   +-----+   +-----+     |
-  20 |   |     |   |     |   |     |   |     |   |     |     |
-     +---+-----+---+-----+---+-----+---+-----+---+-----+-----+
-          Clean    Random   Zero-Shot  Protected CS-Trap
-```
+### 5.2 Pending Experiments
 
-### 5.2 Key Empirical Findings
+- Qwen3-8B: a Sol array job was submitted for the missing original, random-edit, protected, and custom-protected seeds. Its results must be checked and aggregated after completion. No three-seed mean or standard deviation is available yet.
+- Meta-Llama-3-8B: the Hugging Face model access request is pending. No Llama adapter or evaluation result is available.
+- Zero-shot baselines and loss-curve comparisons must be measured before the final report.
 
-#### 1. Unlearnable Protection Neutralizes Fine-Tuning Gains
-Fine-tuning Llama-3-8B on clean original data yields a $+9.88\%$ absolute gain in test accuracy over zero-shot ($38.60\% \to 48.48\%$). However, fine-tuning on protected data causes clean test performance to plummet to **$26.92\%$** for label hints and **$25.31\%$** for CS-Trap. Considering that random guessing among four choices is $25.0\%$, our defense completely neutralizes the utility of unauthorized fine-tuning.
-
-#### 2. Rigorous Validation of the Noise Control Baseline
-A critical question in data poisoning is whether degraded accuracy stems from semantic corruption. As shown in Table 1, Llama-3-8B fine-tuned on **Random Edits** retains an accuracy of **$46.86\%$** (only $1.62\%$ below clean training). This provides empirical proof that accuracy collapse under protected conditions is governed exclusively by shortcut learning rather than syntactical disruption.
-
-#### 3. Superior Utility of CS-Trap
-While artificial label hints increase GPT-2 perplexity ($22.40 \to 24.93$), CS-Trap **improves** perplexity to **$21.87$** by utilizing natural discourse connectors ("Specifically, ", "Notably, "). Furthermore, CS-Trap achieves the highest semantic similarity ($0.9794$), ensuring that human readers perceive zero anomaly.
-
-#### 4. Black-Box Defense Transferability
-When evaluated on the black-box **Qwen3-8B** model, datasets crafted without any knowledge of Qwen's tokenizer or architecture still reduce clean test accuracy from $46.48\%$ down to **$27.32\%$**. This confirms that shortcut-induced unlearnability transcends specific model families.
+Any results table or chart in the final submission should be generated from real evaluation JSON files with `mock: false`. Mock outputs are for pipeline checks only.
 
 ---
 
-## 6. Training Loss Dynamics and Trade-off Analysis
+## 6. Discussion and Limitations
 
-### 6.1 Training Loss Curves: Visualizing the Unlearnable State
-In standard fine-tuning, training loss exhibits a steady, gradual descent as the model adjusts low-rank attention weights to represent complex reasoning paths. In stark contrast, when fine-tuning on protected datasets, the training loss plunges toward zero within the earliest iterations ($\mathcal{L} < 0.05$ after 20 steps). The loss curves visually depict the onset of the **unlearnable state**: the model terminates gradient updates because the shortcut perfectly predicts the target label, causing backpropagation to starve the semantic layers of learning signals.
-
-### 6.2 Privacy Efficacy vs. Text Utility Trade-Off
-A deployable personal data protection system must balance **protection efficacy** (clean test accuracy drop) against **text utility** (low perplexity, high SBERT similarity). While representative label hints suffer an utility penalty due to visible punctuation artifacts, our CS-Trap occupies the optimal upper-right frontier: achieving maximum protection ($23.17\%$ drop) with near-lossless semantics ($0.9794$) and superior fluency ($21.87$ PPL).
+The seed-42 Qwen result suggests that label-hint training may reduce clean-test performance in this setup. The random-edit control and repeated seeds are necessary to determine whether the effect is robust and specific to the label-correlated text. The current evidence does not support claims about the custom method, cross-model transfer, or protection of arbitrary personal text. ARC-Challenge is a multiple-choice science benchmark and is only a proxy for real personal data.
 
 ---
 
-## 7. Future Works and Limitations
+## 7. Next Steps
 
-While this work confirms the viability of unlearnable text against LLMs, several promising frontiers warrant further exploration:
-1. **Adversarial and Robust Retraining:** Investigating whether adversarial fine-tuning or robust feature purification (Ilyas et al., 2019) can mitigate text shortcuts without degrading clean accuracy.
-2. **Partial Protection Regimes:** Real-world scenarios may involve only a subset of users protecting their data ($20\%-50\%$). Future work should examine the critical mass of protected text required to prevent unauthorized concept learning.
-3. **Generative Paraphrasing Defense:** Exploring whether automated LLM summarizers or paraphrasing models (e.g., T5, Pegasus) applied during data crawling can strip unlearnable discourse markers while preserving core information.
+1. Confirm the Qwen array job completed successfully and inspect each `evaluation_results.json`.
+2. Aggregate only non-mock runs by condition and seed, then update the table with observed means and variation.
+3. If Llama access arrives, run the same conditions; otherwise state the access limitation in the final submission.
+4. Prepare the final PDF report from measured results and include the precise model, dataset, seed, and evaluation settings.
 
 ---
 
