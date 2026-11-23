@@ -121,21 +121,20 @@ def simulate_mock_metrics(
     }
 
 
-def resolve_single_token_choice_ids(tokenizer: Any, choice_labels: List[str]) -> Dict[str, int]:
-    """Require the same single-token answer representation used by training."""
+def resolve_choice_token_sequences(tokenizer: Any, choice_labels: List[str]) -> Dict[str, List[int]]:
+    """Encode complete answer labels exactly as the training targets are encoded."""
     token_ids = {}
     used_ids = set()
     for label in choice_labels:
         ids = tokenizer.encode(f" {label}", add_special_tokens=False)
-        if len(ids) != 1:
-            raise ValueError(
-                f"Choice label {label!r} must tokenize as one token after a space; "
-                f"got {len(ids)} tokens. Sequence scoring is required for this tokenizer."
-            )
-        if ids[0] in used_ids:
-            raise ValueError(f"Different choice labels share token ID {ids[0]}")
-        token_ids[label] = ids[0]
-        used_ids.add(ids[0])
+        if not ids:
+            ids = tokenizer.encode(label, add_special_tokens=False)
+        if not ids:
+            raise ValueError(f"Choice label {label!r} produced no tokens")
+        if tuple(ids) in used_ids:
+            raise ValueError(f"Different choice labels share token sequence {ids}")
+        token_ids[label] = ids
+        used_ids.add(tuple(ids))
     return token_ids
 
 
@@ -145,7 +144,7 @@ def evaluate_clean_accuracy(
     test_records: List[Dict[str, Any]],
     device: str = "cuda",
 ) -> float:
-    """Evaluate choice-label accuracy with validated single-token candidates."""
+    """Evaluate complete choice-label sequence likelihood on clean test prompts."""
     import torch
 
     correct = 0
@@ -158,19 +157,42 @@ def evaluate_clean_accuracy(
             prompt = row["prompt"]
             target = row["target"].strip()
             choice_labels = row["choices"]["label"]
-            choice_token_ids = resolve_single_token_choice_ids(tokenizer, choice_labels)
+            choices = resolve_choice_token_sequences(tokenizer, choice_labels)
+            prompt_ids = tokenizer.encode(prompt, add_special_tokens=False)
+            bos_token_id = getattr(tokenizer, "bos_token_id", None)
+            if bos_token_id is not None:
+                prompt_ids = [bos_token_id] + prompt_ids
+            if not prompt_ids:
+                raise ValueError("Cannot score an empty prompt")
 
-            # Tokenize prompt
-            inputs = tokenizer(prompt, return_tensors="pt").to(device)
-            outputs = model(**inputs)
-            # Logits for the next token position
-            next_token_logits = outputs.logits[0, -1, :]
+            # Each row contains the prompt and all but the last candidate token.
+            # This lets one batched forward pass score labels of any token length.
+            candidate_inputs = [prompt_ids + ids[:-1] for ids in choices.values()]
+            lengths = [len(ids) for ids in candidate_inputs]
+            max_len = max(lengths)
+            pad_id = tokenizer.pad_token_id
+            if pad_id is None:
+                pad_id = tokenizer.eos_token_id
+            if pad_id is None:
+                raise ValueError("Tokenizer must have a pad or EOS token for batched scoring")
+            input_ids = torch.tensor(
+                [ids + [pad_id] * (max_len - len(ids)) for ids in candidate_inputs],
+                device=device,
+            )
+            attention_mask = torch.tensor(
+                [[1] * length + [0] * (max_len - length) for length in lengths],
+                device=device,
+            )
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)
 
-            # Score each candidate choice
-            choice_scores = {
-                label: next_token_logits[token_id].item()
-                for label, token_id in choice_token_ids.items()
-            }
+            choice_scores = {}
+            for candidate_index, (label, ids) in enumerate(choices.items()):
+                score = 0.0
+                for token_offset, token_id in enumerate(ids):
+                    position = len(prompt_ids) - 1 + token_offset
+                    logits = outputs.logits[candidate_index, position, :].float()
+                    score += torch.log_softmax(logits, dim=-1)[token_id].item()
+                choice_scores[label] = score
 
             pred = max(choice_scores, key=choice_scores.get)
             if pred == target:
